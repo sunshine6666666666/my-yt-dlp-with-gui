@@ -10,6 +10,13 @@ def main():
     # Detect yt-dlp executable
     parent_dir = os.path.dirname(current_dir)
     yt_dlp_path = os.path.join(parent_dir, "yt-dlp")
+    # Ensure Homebrew paths are visible when launching via .app (Finder PATH is minimal)
+    brew_paths = ["/opt/homebrew/bin", "/usr/local/bin"]
+    existing_path = os.environ.get("PATH", "")
+    for p in brew_paths:
+        if os.path.exists(p) and p not in existing_path.split(":"):
+            existing_path = f"{p}:{existing_path}" if existing_path else p
+    os.environ["PATH"] = existing_path
     
     if os.name == "nt":
         yt_dlp_path += ".exe"

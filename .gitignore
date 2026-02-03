@@ -134,3 +134,4 @@ yt-dlp-plugins
 # Packages
 yt_dlp_ejs/
 yt-dlp-gui/logs/
+.cursor/debug.log
