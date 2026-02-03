@@ -24,6 +24,8 @@ class Downloader:
         self._paused = False
         self._cancelled = False
         self._aborted = False
+        self._cookie_fallback_cmd = None
+        self._cookie_primary = None
 
     def start(self):
         # Construct output template with path
@@ -40,14 +42,25 @@ class Downloader:
         format_pref = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
         cmd.extend(["-f", format_pref])
 
-        # 注入 Cookie (Unit 004)
-        if hasattr(self, 'config') and self.config:
+        # 注入 Cookie：优先浏览器 Cookie（Chrome），失败自动回退静态 Cookie
+        if hasattr(self, "config") and self.config:
             c_path = self.config.get("cookies_path")
+            cookies_from_browser = bool(self.config.get("cookies_from_browser"))
+
             if c_path and not os.path.exists(c_path):
-                self.callbacks['error']("Cookie 文件路径无效，请重新导入 Cookie")
+                self.callbacks["error"]("Cookie 文件路径无效，请重新导入 Cookie")
                 return
-            if c_path:
-                cmd.extend(["--cookies", c_path])
+
+            if cookies_from_browser:
+                self._cookie_primary = "browser"
+                cmd.extend(["--cookies-from-browser", "chrome"])
+                if c_path:
+                    # 构建回退命令（与 primary 唯一差异是 cookie 参数）
+                    self._cookie_fallback_cmd = None  # 先占位，后面统一补齐其它参数再生成
+            else:
+                self._cookie_primary = "file"
+                if c_path:
+                    cmd.extend(["--cookies", c_path])
             
             # 注入安全模式/慢速下载 (Unit 005)
             if self.config.get("safe_mode"):
@@ -67,6 +80,25 @@ class Downloader:
             cmd.append("--no-playlist")
 
         cmd.append(self.task.url)
+
+        # 生成回退命令（仅当 primary 是浏览器且存在静态 cookie）
+        if hasattr(self, "config") and self.config and self._cookie_primary == "browser":
+            c_path = self.config.get("cookies_path")
+            if c_path:
+                fallback_cmd = []
+                skip_next = False
+                # 把 primary 中的 --cookies-from-browser chrome 替换成 --cookies <path>
+                i = 0
+                while i < len(cmd):
+                    part = cmd[i]
+                    if part == "--cookies-from-browser":
+                        i += 2  # skip browser + value
+                        fallback_cmd.extend(["--cookies", c_path])
+                        continue
+                    fallback_cmd.append(part)
+                    i += 1
+                self._cookie_fallback_cmd = fallback_cmd
+
         # Mask cookies path in logs
         cmd_log = []
         skip_next = False
@@ -101,60 +133,118 @@ class Downloader:
             
         except Exception as e:
             logger.error(f"Popen failed: {e}")
-            # #region agent log
-            _dbg_log("downloader_popen_failed", {"error": str(e)}, hypothesis_id="H4")
-            # #endregion
             self.callbacks['error'](str(e))
+
+    def _is_cookies_from_browser_failure(self, line: str) -> bool:
+        """识别浏览器 Cookie 读取失败（解密/数据库锁/找不到 profile 等），用于触发回退。"""
+        if not self._cookie_fallback_cmd:
+            return False
+        s = line.lower()
+        # yt-dlp 常见输出形态：ERROR: ...
+        if "error:" not in s:
+            return False
+        # 必须先确认与 cookies-from-browser 相关，再用细项判断，避免误判
+        if "cookies-from-browser" not in s and "cookies from browser" not in s:
+            return False
+        needles = [
+            "could not decrypt",
+            "failed to decrypt",
+            "could not copy",
+            "sqlite",
+            "database is locked",
+            "cannot open database",
+            "no such file or directory",
+            "keychain",
+            "profile",
+        ]
+        return any(n in s for n in needles)
 
     def _read_output(self):
         if not self.process:
             return
 
         try:
-            for line in self.process.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                logger.debug(f"Raw output line: {line}")
+            # 支持一次性“浏览器 Cookie → 静态 Cookie”回退：先读 primary，若识别失败则重启为 fallback
+            while self.process and not self._cancelled:
+                proc = self.process
+                for line in proc.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    logger.debug(f"Raw output line: {line}")
 
-                # Detect auth/cookies issues early and abort
-                if "cookies are no longer valid" in line:
-                    self._abort_with_error("Cookie 已失效，请重新导入 Cookie")
-                    return
-                if "Sign in to confirm you" in line:
-                    self._abort_with_error("需要登录验证，请重新导入 Cookie 或使用浏览器 Cookie")
-                    return
-                if "No supported JavaScript runtime could be found" in line or "n challenge solving failed" in line:
-                    self._abort_with_error("缺少 JS 运行时，建议安装 Node.js 后重试")
-                    return
-                if "Requested format is not available" in line:
-                    self._abort_with_error("可用格式为空，请确认 Cookie 有效或尝试更换视频")
-                    return
-                
-                # Parse progress
-                if line.startswith("download:"):
-                    # Format: download: 45.6% 2.3MiB/s 00:30
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        progress_str = parts[1].replace('%', '')
-                        speed = parts[2]
-                        eta = parts[3]
+                    # 浏览器 Cookie 读取失败：自动回退到静态 Cookie 并提示
+                    if self._cookie_primary == "browser" and self._is_cookies_from_browser_failure(line):
+                        logger.warning("Browser cookies failed; falling back to static cookie file")
                         try:
-                            # Handle 'NA' or other non-numeric progress
-                            if progress_str == 'NA':
-                                progress = 0.0
-                            else:
-                                progress = float(progress_str)
-                            self.callbacks['progress'](progress, speed, eta)
-                        except ValueError:
+                            self.task.notice = "浏览器 Cookie 读取失败，已回退静态 Cookie"
+                        except Exception:
                             pass
-                elif "[download]" in line and "Destination:" in line:
-                    # Extract title if possible or at least note destination
-                    pass
-            
-            self.process.wait()
-            logger.info(f"Process finished with code: {self.process.returncode}")
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                        # 启动 fallback 进程，并继续读取其输出
+                        try:
+                            self.process = subprocess.Popen(
+                                self._cookie_fallback_cmd,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                                bufsize=1,
+                                encoding="utf-8",
+                                errors="replace",
+                            )
+                            self.task.process = self.process
+                            logger.info(f"Fallback subprocess started with PID: {self.process.pid}")
+                            break  # break for-loop, continue while-loop with new process
+                        except Exception as e:
+                            self.callbacks["error"](f"浏览器 Cookie 读取失败且回退启动失败: {e}")
+                            return
+
+                    # Detect auth/cookies issues early and abort
+                    if "cookies are no longer valid" in line:
+                        self._abort_with_error("Cookie 已失效，请重新导入 Cookie")
+                        return
+                    if "Sign in to confirm you" in line:
+                        self._abort_with_error("需要登录验证，请重新导入 Cookie 或使用浏览器 Cookie")
+                        return
+                    if "No supported JavaScript runtime could be found" in line or "n challenge solving failed" in line:
+                        self._abort_with_error("缺少 JS 运行时，建议安装 Node.js 后重试")
+                        return
+                    if "Requested format is not available" in line:
+                        self._abort_with_error("可用格式为空，请确认 Cookie 有效或尝试更换视频")
+                        return
+                    
+                    # Parse progress
+                    if line.startswith("download:"):
+                        # Format: download: 45.6% 2.3MiB/s 00:30
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            progress_str = parts[1].replace('%', '')
+                            speed = parts[2]
+                            eta = parts[3]
+                            try:
+                                # Handle 'NA' or other non-numeric progress
+                                if progress_str == 'NA':
+                                    progress = 0.0
+                                else:
+                                    progress = float(progress_str)
+                                self.callbacks['progress'](progress, speed, eta)
+                            except ValueError:
+                                pass
+                    elif "[download]" in line and "Destination:" in line:
+                        # Extract title if possible or at least note destination
+                        pass
+
+                # 当前进程输出结束（自然退出或被 terminate）
+                if self.process is proc:
+                    break
+
+            if self.process:
+                self.process.wait()
+                logger.info(f"Process finished with code: {self.process.returncode}")
             
             if self._cancelled:
                 return # Don't trigger complete/error if cancelled

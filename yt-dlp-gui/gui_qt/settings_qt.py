@@ -32,6 +32,10 @@ class SettingsDialog(QDialog):
         self.lbl_cookie_status.setStyleSheet("color: blue;")
         layout.addWidget(self.lbl_cookie_status)
 
+        self.cb_browser_cookie = QCheckBox("优先使用浏览器 Cookie (Chrome)（推荐，失败会自动回退静态 Cookie）")
+        self.cb_browser_cookie.setChecked(bool(self.config.get("cookies_from_browser")))
+        layout.addWidget(self.cb_browser_cookie)
+
         cookie_btn_layout = QHBoxLayout()
         btn_import = QPushButton("导入 Cookie (.txt)")
         btn_import.clicked.connect(self._import_cookie)
@@ -91,4 +95,5 @@ class SettingsDialog(QDialog):
             return
         self.config.set("download_path", path)
         self.config.set("safe_mode", self.cb_safe.isChecked())
+        self.config.set("cookies_from_browser", self.cb_browser_cookie.isChecked())
         self.accept()

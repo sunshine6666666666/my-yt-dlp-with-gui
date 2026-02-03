@@ -7,6 +7,7 @@ class Config:
         self.data = {
             "download_path": "~/Downloads",
             "cookies_path": "",
+            "cookies_from_browser": False,
             "safe_mode": True
         }
         self.load()

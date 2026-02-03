@@ -3,7 +3,7 @@ import sys
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLineEdit, QPushButton, QListView, QStyledItemDelegate,
                              QStyle, QProgressBar, QLabel, QMessageBox)
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import Qt, QTimer, QSize, QObject, Signal
 from PySide6.QtGui import QPainter, QColor
 
 from core.config import Config
@@ -14,6 +14,10 @@ from .settings_qt import SettingsDialog
 from core.logger import setup_logger
 
 logger = setup_logger("GUI")
+
+class UiBridge(QObject):
+    """用于跨线程安全触发 UI 刷新（避免在非主线程直接操作 Qt Widgets 导致崩溃）"""
+    refresh_requested = Signal()
 
 class TaskDelegate(QStyledItemDelegate):
     """自定义任务渲染委派"""
@@ -51,6 +55,9 @@ class TaskDelegate(QStyledItemDelegate):
         status_text = f"状态: {task.status.value}"
         if task.status == TaskStatus.DOWNLOADING:
             status_text = f"{task.progress:.1f}% | {task.speed} | ETA: {task.eta}"
+            # 非致命提示（例如浏览器 Cookie 读取失败后回退到静态 Cookie）
+            if getattr(task, "notice", ""):
+                status_text = f"⚠️ {task.notice} | {status_text}"
         elif task.status == TaskStatus.FAILED:
             status_text = f"❌ 失败: {task.error[:60]}"
         elif task.status == TaskStatus.COMPLETED:
@@ -87,8 +94,10 @@ class AppWindow(QMainWindow):
         self.timer.timeout.connect(self._refresh_ui)
         self.timer.start(1000)
 
-        # 主动回调刷新（更及时）
-        self.queue_manager.on_update = lambda _tid: self._refresh_ui()
+        # 主动回调刷新（更及时）——必须跨线程安全，不能在下载线程直接操作 Qt Widgets
+        self._ui_bridge = UiBridge()
+        self._ui_bridge.refresh_requested.connect(self._refresh_ui)
+        self.queue_manager.on_update = lambda _tid: self._ui_bridge.refresh_requested.emit()
 
     def _init_ui(self):
         central = QWidget()

@@ -22,6 +22,7 @@ class Task:
     speed: str = ""
     eta: str = ""
     error: str = ""
+    notice: str = ""
     
     # Non-serializable field
     process: Optional[subprocess.Popen] = field(default=None, repr=False, compare=False)
