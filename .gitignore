@@ -135,3 +135,4 @@ yt-dlp-plugins
 yt_dlp_ejs/
 yt-dlp-gui/logs/
 .cursor/debug.log
+yt-dlp-gui/.env

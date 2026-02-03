@@ -1,0 +1,33 @@
+{
+  "skill_name": "feishu-upload-clean",
+  "goal": "上传指定目录内所有视频到飞书云空间指定文件夹，确保上传完成并校验文件存在后清理本地文件，支持慢响应监控与重复文件覆盖确认。",
+  "source_directory": "/Users/yelin/Desktop/codebase/yt-dlp/yt-dlp-gui/gui_qt/downloads",
+  "target_drive_folder_token": "LjC6fGk1vlWBPKdJ5nyc0Dwpn8c",
+  "success_criteria": [
+    "API 返回上传成功",
+    "在飞书目标目录可查询到文件存在",
+    "本地文件在确认上传成功后被删除"
+  ],
+  "constraints": [
+    "视频文件体积大，API返回可能较慢，需要持续监控返回状态",
+    "发现飞书目录中有同名文件时，必须询问用户是否覆盖，等待明确回答后再执行",
+    "仅处理视频文件（mp4/mkv/webm/flv/mov）"
+  ],
+  "workflow": [
+    "扫描源目录中的视频文件",
+    "对每个文件：先检查飞书目标目录是否存在同名文件",
+    "如存在同名文件：询问用户是否覆盖，等待用户回答",
+    "如允许覆盖：删除远端同名文件并执行上传流程",
+    "上传完成后检查 API 返回结果与飞书目录中是否可见文件",
+    "确认成功后删除本地文件",
+    "全部处理完成后输出汇总结果"
+  ],
+  "user_prompts": {
+    "overwrite_confirm": "飞书目录中已存在同名文件：{filename}。是否覆盖？(yes/no)"
+  },
+  "monitoring": {
+    "poll_interval_seconds": 3,
+    "max_wait_seconds": 600,
+    "log_status": true
+  }
+}
